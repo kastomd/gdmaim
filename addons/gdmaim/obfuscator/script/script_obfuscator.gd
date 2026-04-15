@@ -97,75 +97,174 @@ func get_class_symbol() -> SymbolTable.Symbol:
 	return parser.get_class_symbol() if parser else null
 
 
+# This function obfuscates string literals while preserving format placeholders
 func _string_obfuscation(token : Token) -> void:
+	
+	# Ignore tokens that are not string literals
 	if !token.is_string_literal():
 		return
 	
+	# Get the raw string value (without quotes if false)
 	var str : String = token.get_value(false)
 	
+	# Regex to match format placeholders like:
+	# %d, %f, %s, %0.2f or {0}, {1}, etc.
 	var regex : RegEx = RegEx.create_from_string("(%[\\d\\.]*[a-zA-Z]|\\{\\d+\\})", false)
-	if regex.is_valid():
-		var fragments : PackedStringArray = []
-		var candy_holders : PackedStringArray = []
-		var last_candy_idx : int = 0
-		var pimpampum : String = "__HOCUSPOCUS__"
 	
-		var matches : Array[RegExMatch] = regex.search_all(str)
-		for rmatch in matches:
-			var text_before : String = str.substr(last_candy_idx, rmatch.get_start() - last_candy_idx)
-			
-			fragments.append(text_before)
-			fragments.append(pimpampum)
-			candy_holders.append(rmatch.get_string())			
-			
-			last_candy_idx = rmatch.get_end()
+	if regex.is_valid():
 		
-		if candy_holders.size() > 0:	
-			var candy : int = 0
-			var end_pray : PackedStringArray = [" ", "\t", "\n"] # wilwilwilcard String!
-			var tail : String = str.substr(last_candy_idx)
+		# Will store string parts split around placeholders
+		var fragments : PackedStringArray = []
+		
+		# Will store detected placeholders (%d, {0}, etc.)
+		var placeholders : PackedStringArray = []
+		
+		var last_idx : int = 0
+		
+		# Unique marker to temporarily replace placeholders
+		var marker := "__HOCUSPOCUS__"
+		
+		# Find all placeholder matches
+		var matches = regex.search_all(str)
+		
+		for m in matches:
+			# Append text before the placeholder
+			fragments.append(str.substr(last_idx, m.get_start() - last_idx))
 			
-			if !tail.is_empty():
-				fragments.append(tail)
+			# Insert marker instead of placeholder
+			fragments.append(marker)
 			
-			tail = ""
-				
-			for idx : int in range(0, fragments.size(), 1):
-				var fragment : String = fragments[idx]
-				
-				if fragment.is_empty():
-					continue
-					
-				elif fragment == pimpampum:
-					if candy < candy_holders.size():
-						tail += candy_holders[candy]
-						candy += 1
-					continue
-				
-				var str_begin : String = fragment[0]
-				var str_end : String = fragment[fragment.length() - 1]
-				
-				if !(str_begin in end_pray):
-					str_begin = ""
-				
-				if !(str_end in end_pray):
-					str_end = ""
+			# Save actual placeholder
+			placeholders.append(m.get_string())
+			
+			# Move index forward
+			last_idx = m.get_end()
+		
+		# Append remaining tail after last match
+		var tail := str.substr(last_idx)
+		if !tail.is_empty():
+			fragments.append(tail)
+		
+		var result := ""
+		var p_idx := 0
+		
+		# Process each fragment
+		for fragment in fragments:
+			
+			# Skip empty fragments
+			if fragment.is_empty():
+				continue
+			
+			# Restore placeholder in correct position
+			if fragment == marker:
+				if p_idx < placeholders.size():
+					result += placeholders[p_idx]
+					p_idx += 1
+				continue
+			
+			# Preserve pure whitespace fragments
+			if _is_whitespace(fragment):
+				result += fragment
+				continue
+			
+			# Split fragment into:
+			# leading whitespace, core text, trailing whitespace
+			var parts = _split_edges(fragment)
 
-				# avoid obfuscating whitespace-only strings
-				if fragment.strip_edges().is_empty():
-					tail += fragment
-					continue
-				
-				tail += str(str_begin, _symbol_table.obfuscate_string_global(fragment.strip_edges()), str_end)
+			var begin: String = parts[0] if parts.size() > 0 else ""
+			var core: String = parts[1] if parts.size() > 1 else ""
+			var end: String = parts[2] if parts.size() > 2 else ""
+
+			# If there's no core text, keep fragment unchanged
+			if core.is_empty():
+				result += fragment
+				continue
 			
-			for x in range(candy, candy_holders.size(), 1):
-				tail += candy_holders[x]
-				
-			# prevent set_value from removing the first character if it's % instead of a quote "
-			token.set_value("\"" + tail)
-			return			
-			
+			# Obfuscate only the core text, preserving edges
+			result += begin + _symbol_table.obfuscate_string_global(core) + end
+		
+		# Fix for token.set_value bug (ensures proper quoting)
+		token.set_value("\"" + result)
+		return
+	
+	# Fallback: obfuscate entire string if regex is invalid
 	token.set_value(_symbol_table.obfuscate_string_global(str))
+
+
+# Checks if a fragment contains only whitespace or escaped whitespace
+func _is_whitespace(fragment: String) -> bool:
+	
+	# Single-character whitespace
+	var chars = [" ", "\t"]
+	
+	# Escaped whitespace sequences
+	var pairs = ["\\n", "\\t"]
+	
+	var i := 0
+	while i < fragment.length():
+		
+		# Check escaped sequences first (\n, \t)
+		if i + 1 < fragment.length():
+			var pair := fragment.substr(i, 2)
+			if pair in pairs:
+				i += 2
+				continue
+		
+		# Check normal whitespace
+		if fragment[i] in chars:
+			i += 1
+		else:
+			return false
+	
+	return true
+
+
+# Splits a fragment into leading whitespace, core content, and trailing whitespace
+func _split_edges(fragment: String) -> Array:
+	
+	var chars = [" ", "\t"]
+	var pairs = ["\\n", "\\t"]
+	
+	var begin := ""
+	var end := ""
+	
+	# Extract leading whitespace
+	var i := 0
+	while i < fragment.length():
+		if i + 1 < fragment.length():
+			var pair := fragment.substr(i, 2)
+			if pair in pairs:
+				begin += pair
+				i += 2
+				continue
+		
+		if fragment[i] in chars:
+			begin += fragment[i]
+			i += 1
+		else:
+			break
+	
+	# Extract trailing whitespace
+	var j := fragment.length() - 1
+	while j >= i:
+		if j - 1 >= i:
+			var pair := fragment.substr(j - 1, 2)
+			if pair in pairs:
+				end = pair + end
+				j -= 2
+				continue
+		
+		if fragment[j] in chars:
+			end = fragment[j] + end
+			j -= 1
+		else:
+			break
+	
+	# Extract core content (middle part)
+	var core_len := j - i + 1
+	var core := fragment.substr(i, core_len) if core_len > 0 else ""
+	
+	return [begin, core, end]
 
 
 func _string_param_obfuscation(token : Token, next_token : Token) -> void:
